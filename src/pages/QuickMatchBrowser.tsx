@@ -30,16 +30,29 @@ export function QuickMatchBrowser() {
     // Subscribe to ALL match changes
     const subscription = quickMatchService.subscribeToAllMatches(() => {
       loadLobbies();
-      // Also check if myLobby was updated (someone joined)
-      if (myLobby) {
-        checkMyLobbyStatus(myLobby.id);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // Separate effect to check my lobby status
+  useEffect(() => {
+    if (!myLobby) return;
+    
+    // Subscribe to specific match updates
+    const subscription = quickMatchService.subscribeToMatch(myLobby.id, (match) => {
+      if (match.status === 'active' && match.player2_id) {
+        setMyLobby(null);
+        navigate(`/game/${match.id}`);
       }
     });
 
     return () => {
       subscription.unsubscribe();
     };
-  }, [myLobby]);
+  }, [myLobby?.id]);
 
   // Timer for my lobby
   useEffect(() => {
@@ -58,14 +71,17 @@ export function QuickMatchBrowser() {
   const loadLobbies = useCallback(async () => {
     try {
       const data = await quickMatchService.getAvailableLobbies();
-      // Filter out my own lobby from the main list (we show it separately)
-      const otherLobbies = data.filter(l => l.player1_id !== user?.id) as LobbyWithPlayer[];
-      setLobbies(otherLobbies);
       
       // Check if I have a lobby
       const myLobbyData = data.find(l => l.player1_id === user?.id);
       if (myLobbyData) {
-        setMyLobby(myLobbyData as Match & { player1: Profile });
+        setMyLobby(myLobbyData);
+        // Filter out my own lobby from the main list
+        const otherLobbies = data.filter(l => l.player1_id !== user?.id) as LobbyWithPlayer[];
+        setLobbies(otherLobbies);
+      } else {
+        setMyLobby(null);
+        setLobbies(data as LobbyWithPlayer[]);
       }
     } catch (error) {
       console.error('Failed to load lobbies:', error);
@@ -73,19 +89,6 @@ export function QuickMatchBrowser() {
       setLoading(false);
     }
   }, [user?.id]);
-
-  const checkMyLobbyStatus = async (matchId: string) => {
-    try {
-      const match = await quickMatchService.getMatch(matchId);
-      // If someone joined, redirect both players to game
-      if (match.status === 'in_progress' && match.player2_id) {
-        setMyLobby(null);
-        navigate(`/game/${matchId}`);
-      }
-    } catch (error) {
-      console.error('Failed to check lobby:', error);
-    }
-  };
 
   const handleCreateLobby = async () => {
     try {
@@ -123,6 +126,7 @@ export function QuickMatchBrowser() {
       setLoading(true);
       await quickMatchService.cancelLobby(myLobby.id);
       setMyLobby(null);
+      setTimeWaiting(0);
       await loadLobbies();
     } catch (error: any) {
       console.error('Failed to cancel:', error);
@@ -226,10 +230,10 @@ export function QuickMatchBrowser() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="w-14 h-14 bg-gradient-to-br from-cyan-400 to-cyan-600 rounded-full flex items-center justify-center text-2xl font-bold">
-                    {myLobby.player1.username?.[0] || 'You'}
+                    {myLobby.player1?.username?.[0] || 'You'}
                   </div>
                   <div>
-                    <p className="font-bold text-lg">{myLobby.player1.username || 'You'}</p>
+                    <p className="font-bold text-lg">{myLobby.player1?.username || 'You'}</p>
                     <p className="text-sm text-gray-400">Host</p>
                   </div>
                 </div>
@@ -293,10 +297,10 @@ export function QuickMatchBrowser() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-xl font-bold">
-                      {lobby.player1.username?.[0] || 'P'}
+                      {lobby.player1?.username?.[0] || 'P'}
                     </div>
                     <div>
-                      <p className="font-bold">{lobby.player1.username || 'Player'}</p>
+                      <p className="font-bold">{lobby.player1?.username || 'Player'}</p>
                       <p className="text-sm text-gray-400">Waiting for opponent</p>
                     </div>
                   </div>
