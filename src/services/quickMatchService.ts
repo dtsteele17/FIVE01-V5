@@ -1,5 +1,26 @@
 import { supabase } from '@/lib/supabase';
-import type { Match, Profile } from '@/types/database';
+
+export interface Match {
+  id: string;
+  status: string;
+  game_mode_id: string;
+  legs_to_win: number;
+  player1_id: string;
+  player2_id: string | null;
+  current_player_id: string | null;
+  is_ranked: boolean;
+  is_private: boolean;
+  is_vs_bot: boolean;
+  created_at: string;
+  started_at: string | null;
+}
+
+export interface Profile {
+  id: string;
+  username: string;
+  display_name: string | null;
+  avatar_url: string | null;
+}
 
 export const quickMatchService = {
   // Create a new lobby
@@ -17,11 +38,13 @@ export const quickMatchService = {
         is_ranked: false,
         is_private: false,
         double_out: doubleOut,
+        is_vs_bot: false,
       })
-      .select('*, player1:profiles!player1_id(*)')
+      .select('*')
       .single();
 
     if (error) {
+      console.error('Create lobby error:', error);
       throw new Error(`Failed to create lobby: ${error.message}`);
     }
     
@@ -29,21 +52,28 @@ export const quickMatchService = {
       throw new Error('Failed to create lobby: No data returned');
     }
     
-    return data as Match & { player1: Profile };
+    return data as Match;
   },
 
   // Get all available lobbies
   async getAvailableLobbies() {
     const { data, error } = await supabase
       .from('matches')
-      .select('*, player1:profiles!player1_id(*)')
+      .select(`
+        *,
+        player1:player1_id(username, display_name, avatar_url)
+      `)
       .eq('status', 'waiting')
       .is('player2_id', null)
       .eq('is_private', false)
+      .eq('is_vs_bot', false)
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    return data as (Match & { player1: Profile })[];
+    if (error) {
+      console.error('Get lobbies error:', error);
+      throw error;
+    }
+    return (data || []) as (Match & { player1: Profile })[];
   },
 
   // Join an existing lobby
@@ -76,29 +106,64 @@ export const quickMatchService = {
       .from('matches')
       .update({
         player2_id: user.user.id,
-        status: 'in_progress',
+        status: 'active',
         started_at: new Date().toISOString(),
-        current_player_id: user.user.id, // Player 2 starts
+        current_player_id: checkData.player1_id,
       })
       .eq('id', matchId)
       .eq('status', 'waiting')
       .is('player2_id', null)
-      .select('*, player1:profiles!player1_id(*), player2:profiles!player2_id(*)')
+      .select('*')
       .single();
 
     if (error) {
+      console.error('Join lobby error:', error);
       throw new Error(`Failed to join lobby: ${error.message}`);
     }
     if (!data) {
       throw new Error('Lobby no longer available');
     }
-    return data as Match & { player1: Profile; player2: Profile };
+    return data as Match;
   },
 
-  // Subscribe to lobby updates (for when someone joins your lobby)
-  subscribeToLobby(matchId: string, onUpdate: (match: Match) => void) {
+  // Cancel/delete lobby
+  async cancelLobby(matchId: string) {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) throw new Error('Not authenticated');
+    
+    const { error } = await supabase
+      .from('matches')
+      .delete()
+      .eq('id', matchId)
+      .eq('player1_id', user.user.id)
+      .eq('status', 'waiting');
+
+    if (error) {
+      console.error('Cancel lobby error:', error);
+      throw error;
+    }
+  },
+
+  // Get a specific match
+  async getMatch(matchId: string) {
+    const { data, error } = await supabase
+      .from('matches')
+      .select(`
+        *,
+        player1:player1_id(username, display_name, avatar_url),
+        player2:player2_id(username, display_name, avatar_url)
+      `)
+      .eq('id', matchId)
+      .single();
+
+    if (error) throw error;
+    return data as Match & { player1?: Profile; player2?: Profile };
+  },
+
+  // Subscribe to match changes
+  subscribeToMatch(matchId: string, onUpdate: (match: Match) => void) {
     return supabase
-      .channel(`lobby:${matchId}`)
+      .channel(`match:${matchId}`)
       .on(
         'postgres_changes',
         {
@@ -114,39 +179,7 @@ export const quickMatchService = {
       .subscribe();
   },
 
-  // Subscribe to new lobbies (for browser page)
-  subscribeToNewLobbies(onUpdate: () => void) {
-    return supabase
-      .channel('new-lobbies')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'matches',
-          filter: 'status=eq.waiting',
-        },
-        () => {
-          onUpdate();
-        }
-      )
-      .subscribe();
-  },
-
-  // Cancel/delete lobby
-  async cancelLobby(matchId: string) {
-    const { data: user } = await supabase.auth.getUser();
-    
-    const { error } = await supabase
-      .from('matches')
-      .delete()
-      .eq('id', matchId)
-      .eq('player1_id', user.user?.id)
-      .eq('status', 'waiting');
-
-    if (error) throw error;
-  },
-  // Subscribe to ALL match changes (not just one lobby)
+  // Subscribe to all match changes
   subscribeToAllMatches(onUpdate: () => void) {
     return supabase
       .channel('all-matches')
@@ -162,17 +195,7 @@ export const quickMatchService = {
         }
       )
       .subscribe();
-  },
-  
-  // Get a specific match
-  async getMatch(matchId: string) {
-    const { data, error } = await supabase
-      .from('matches')
-      .select('*, player1:profiles!player1_id(*), player2:profiles!player2_id(*)')
-      .eq('id', matchId)
-      .single();
-
-    if (error) throw error;
-    return data as Match & { player1: Profile; player2?: Profile };
   }
 };
+
+export default quickMatchService;
